@@ -2,18 +2,27 @@
 
 ## Overview
 
-Sahaayak AI is a cloud-native, AI-powered multilingual public service assistant that helps Indian citizens discover and understand government schemes they're eligible for. The system employs a microservices architecture deployed on AWS, with AI-driven scheme matching, multilingual NLP capabilities, voice interface support, and aggressive optimization for low-bandwidth environments.
+Sahaayak AI is a cloud-native, AI-powered multilingual public scheme navigator designed to help Indian citizens discover and understand government schemes they're eligible for. The system employs a hybrid AI + rule-based architecture deployed on AWS, with voice-first interaction, multilingual NLP capabilities, and aggressive optimization for low-bandwidth environments to serve rural and underserved communities.
 
-The design prioritizes accessibility, performance, and scalability to serve millions of users across diverse linguistic, literacy, and connectivity contexts.
+The design prioritizes accessibility, performance, and scalability to serve millions of users across diverse linguistic, literacy, and connectivity contexts. The platform uses a microservices architecture with Progressive Web App (PWA) frontend, Lambda-based serverless backend, and an AI-powered scheme ingestion pipeline for automatic database updates.
 
 ## Architecture
 
 ### High-Level Architecture
 
+The Sahaayak AI platform is built on a five-layer architecture:
+
+1. **Client Layer**: Progressive Web App (PWA) with mobile-first design, voice interface, and offline-first capabilities
+2. **API Gateway Layer**: AWS API Gateway with CloudFront CDN for global content delivery and request routing
+3. **Application Layer**: Lambda-based microservices for authentication, profile management, scheme matching, search, translation, voice processing, and notifications
+4. **AI/ML Layer**: Hybrid AI + rule-based eligibility engine, NLP for multilingual understanding, speech-to-text, text-to-speech, and AI-powered scheme ingestion pipeline
+5. **Data Layer**: PostgreSQL for user data, DynamoDB for scheme database, Redis for caching, S3 for storage
+6. **Infrastructure Layer**: AWS cloud services with auto-scaling, multi-region deployment, monitoring, and security
+
 ```mermaid
 graph TB
     subgraph "Client Layer"
-        WEB[Web Application]
+        WEB[Web Application PWA]
         MOBILE[Mobile App]
         VOICE[Voice Interface]
     end
@@ -23,7 +32,7 @@ graph TB
         CDN[CloudFront CDN]
     end
     
-    subgraph "Application Layer"
+    subgraph "Application Layer - Lambda Microservices"
         AUTH[Authentication Service]
         PROFILE[Profile Service]
         MATCHER[Scheme Matcher Service]
@@ -31,20 +40,34 @@ graph TB
         TRANSLATE[Translation Service]
         VOICE_SVC[Voice Service]
         NOTIFY[Notification Service]
+        ADMIN[Admin Service]
     end
     
     subgraph "AI/ML Layer"
-        ML_MODEL[Matching ML Model]
+        HYBRID[Hybrid AI + Rule Engine]
+        ML_MODEL[ML Matching Model]
         NLP[NLP Engine]
         STT[Speech-to-Text]
         TTS[Text-to-Speech]
+        INGESTION[AI Ingestion Pipeline]
+        FUZZY[Fuzzy Matcher]
+        EXPLAIN[Explainability Module]
     end
     
     subgraph "Data Layer"
-        USER_DB[(User Database)]
-        SCHEME_DB[(Scheme Database)]
+        USER_DB[(PostgreSQL - User Data)]
+        SCHEME_DB[(DynamoDB - Schemes)]
         CACHE[(Redis Cache)]
         S3[S3 Storage]
+        SEARCH_IDX[(OpenSearch Index)]
+    end
+    
+    subgraph "Infrastructure Layer"
+        MONITOR[CloudWatch Monitoring]
+        LOGS[CloudWatch Logs]
+        SECRETS[Secrets Manager]
+        KMS[KMS Encryption]
+        WAF[AWS WAF]
     end
     
     WEB --> CDN
@@ -58,21 +81,34 @@ graph TB
     APIGW --> TRANSLATE
     APIGW --> VOICE_SVC
     APIGW --> NOTIFY
+    APIGW --> ADMIN
     
-    MATCHER --> ML_MODEL
+    MATCHER --> HYBRID
+    HYBRID --> ML_MODEL
+    HYBRID --> FUZZY
+    MATCHER --> EXPLAIN
     SEARCH --> NLP
     TRANSLATE --> NLP
     VOICE_SVC --> STT
     VOICE_SVC --> TTS
+    ADMIN --> INGESTION
     
     AUTH --> USER_DB
     PROFILE --> USER_DB
     MATCHER --> SCHEME_DB
     SEARCH --> SCHEME_DB
+    SEARCH --> SEARCH_IDX
+    INGESTION --> SCHEME_DB
     MATCHER --> CACHE
     SEARCH --> CACHE
     TRANSLATE --> CACHE
     VOICE_SVC --> S3
+    
+    APIGW --> WAF
+    AUTH --> SECRETS
+    PROFILE --> KMS
+    ALL[All Services] --> MONITOR
+    ALL --> LOGS
 ```
 
 ### Architecture Principles
@@ -508,6 +544,703 @@ interface SchemeFilters {
 - Admin interface for CRUD operations
 - Bulk import supports CSV and JSON formats
 - Validation rules for required fields and data types
+
+### 9. AI-Powered Scheme Ingestion Pipeline
+
+**Responsibility**: Automatically scrape, extract, and update scheme information from government sources.
+
+**Interfaces**:
+
+```typescript
+interface IngestionPipeline {
+  // Scrape government websites for new schemes
+  scrapeGovernmentSources(): Promise<{
+    sourcesScraped: number
+    schemesFound: number
+    errors: string[]
+  }>
+  
+  // Extract scheme details from scraped content
+  extractSchemeData(rawContent: string, sourceUrl: string): Promise<{
+    schemeData: Partial<Scheme>
+    confidence: number
+    extractedFields: string[]
+  }>
+  
+  // Normalize extracted data to standard schema
+  normalizeSchemeData(extractedData: Partial<Scheme>): Promise<Scheme>
+  
+  // Detect duplicate schemes using fuzzy matching
+  detectDuplicates(newScheme: Scheme): Promise<{
+    isDuplicate: boolean
+    matchedSchemeId?: string
+    similarity: number
+  }>
+  
+  // Queue scheme for human verification
+  queueForVerification(scheme: Scheme, confidence: number): Promise<{
+    verificationId: string
+    queuePosition: number
+  }>
+}
+```
+
+**Implementation Details**:
+- Scheduled daily scraping using AWS Lambda with EventBridge triggers
+- Web scraping using Puppeteer for dynamic content
+- NLP-based extraction using fine-tuned BERT model for scheme entities
+- Supports multiple formats: HTML, PDF (using pdf.js), JSON APIs
+- Fuzzy matching using Levenshtein distance for duplicate detection
+- Confidence scoring based on extraction quality (field completeness, data validity)
+- Low confidence schemes (<80%) automatically queued for human review
+- Extraction logs stored in S3 for audit and retraining
+- Handles rate limiting and respects robots.txt
+
+**Extraction Pipeline**:
+1. Scrape government portals (daily at 2 AM IST)
+2. Parse HTML/PDF content
+3. Extract entities: scheme name, description, eligibility, benefits, deadlines
+4. Normalize data (standardize formats, clean text)
+5. Validate against schema
+6. Check for duplicates
+7. Calculate confidence score
+8. High confidence (>95%): Auto-publish
+9. Medium confidence (80-95%): Queue for review
+10. Low confidence (<80%): Flag for manual entry
+
+### 10. Human-in-the-Loop (HITL) Verification Module
+
+**Responsibility**: Enable administrators to review and approve AI-extracted scheme data.
+
+**Interfaces**:
+
+```typescript
+interface HITLVerification {
+  // Get pending schemes for review
+  getPendingSchemes(limit: number): Promise<PendingScheme[]>
+  
+  // Get scheme details with source for review
+  getSchemeForReview(verificationId: string): Promise<{
+    extractedData: Scheme
+    sourceUrl: string
+    sourceContent: string
+    confidence: number
+    lowConfidenceFields: string[]
+  }>
+  
+  // Approve scheme and publish to live database
+  approveScheme(verificationId: string, edits?: Partial<Scheme>): Promise<{
+    schemeId: string
+    published: boolean
+  }>
+  
+  // Reject scheme with reason
+  rejectScheme(verificationId: string, reason: string): Promise<{
+    success: boolean
+  }>
+  
+  // Bulk approve high-confidence schemes
+  bulkApprove(verificationIds: string[]): Promise<{
+    approved: number
+    failed: number
+  }>
+  
+  // Get verification metrics
+  getVerificationMetrics(): Promise<{
+    pendingCount: number
+    approvalRate: number
+    averageReviewTime: number
+    topRejectionReasons: string[]
+  }>
+}
+
+interface PendingScheme {
+  verificationId: string
+  schemeName: string
+  confidence: number
+  extractedAt: Date
+  sourceUrl: string
+  priority: 'high' | 'medium' | 'low'
+}
+```
+
+**Implementation Details**:
+- Admin dashboard built with React for review interface
+- Side-by-side view: extracted data vs. original source
+- Inline editing for corrections
+- Keyboard shortcuts for fast review (Approve: A, Reject: R, Edit: E)
+- Bulk actions for high-confidence schemes
+- Approval workflow: Reviewer → Approver (two-step for critical schemes)
+- Rejection feedback loop: reasons logged for model retraining
+- SLA tracking: alert if pending queue exceeds 50 items
+- Metrics dashboard: approval rate, review time, rejection patterns
+- Audit trail for all verification actions
+
+### 11. Offline-First Architecture & Sync Engine
+
+**Responsibility**: Enable full functionality offline with automatic synchronization when online.
+
+**Interfaces**:
+
+```typescript
+interface OfflineSync {
+  // Check online/offline status
+  getConnectionStatus(): Promise<{
+    isOnline: boolean
+    bandwidth: number // kbps
+    latency: number // ms
+  }>
+  
+  // Queue action for later sync
+  queueAction(action: OfflineAction): Promise<{
+    actionId: string
+    queued: boolean
+  }>
+  
+  // Sync all pending actions
+  syncPendingActions(): Promise<{
+    synced: number
+    failed: number
+    conflicts: SyncConflict[]
+  }>
+  
+  // Get cached data for offline access
+  getCachedData(key: string): Promise<any>
+  
+  // Update cache with new data
+  updateCache(key: string, data: any, ttl: number): Promise<{
+    cached: boolean
+  }>
+  
+  // Resolve sync conflicts
+  resolveConflict(conflict: SyncConflict, resolution: 'local' | 'remote' | 'merge'): Promise<{
+    resolved: boolean
+  }>
+}
+
+interface OfflineAction {
+  type: 'profile_update' | 'search' | 'eligibility_check' | 'form_submission'
+  data: any
+  timestamp: number
+  userId: string
+}
+
+interface SyncConflict {
+  actionId: string
+  localData: any
+  remoteData: any
+  conflictType: 'version_mismatch' | 'data_changed' | 'deleted'
+}
+```
+
+**Implementation Details**:
+- Service Worker for offline caching and background sync
+- IndexedDB for local data storage (max 50 MB)
+- Cache strategy:
+  - Static assets: Cache-first
+  - User profile: Network-first with cache fallback
+  - Scheme data: Stale-while-revalidate
+  - Search results: Network-only (cache for offline)
+- Background Sync API for automatic sync when online
+- Conflict resolution: Last-write-wins with user notification
+- Sync queue persisted in IndexedDB
+- Network status detection using Navigator.onLine and periodic ping
+- Progressive enhancement: full features online, core features offline
+- Offline indicator in UI with sync status
+
+**Offline Capabilities**:
+- View cached schemes (top 10 matches)
+- View profile data
+- Fill forms (saved locally)
+- Voice input (processed when online)
+- Search cached schemes
+- View application status (last synced)
+
+**Online-Only Features**:
+- Real-time scheme matching
+- New scheme discovery
+- Application submission
+- Notifications
+- Admin functions
+
+### 12. Household Profile Management
+
+**Responsibility**: Manage profiles for multiple family members and household-level eligibility.
+
+**Interfaces**:
+
+```typescript
+interface HouseholdProfile {
+  householdId: string
+  headOfHousehold: string // userId
+  members: FamilyMember[]
+  householdIncome: number
+  address: Address
+  createdAt: Date
+  updatedAt: Date
+}
+
+interface FamilyMember {
+  memberId: string
+  name: string
+  age: number
+  gender: 'male' | 'female' | 'other'
+  relationship: 'spouse' | 'child' | 'parent' | 'sibling' | 'other'
+  educationLevel: string
+  occupation?: string
+  income?: number
+  hasDisability: boolean
+  disabilityType?: string
+}
+
+interface HouseholdService {
+  // Create household profile
+  createHousehold(userId: string, household: Partial<HouseholdProfile>): Promise<HouseholdProfile>
+  
+  // Add family member
+  addMember(householdId: string, member: FamilyMember): Promise<{
+    memberId: string
+  }>
+  
+  // Update family member
+  updateMember(householdId: string, memberId: string, updates: Partial<FamilyMember>): Promise<FamilyMember>
+  
+  // Remove family member
+  removeMember(householdId: string, memberId: string): Promise<{
+    success: boolean
+  }>
+  
+  // Get household-level scheme matches
+  getHouseholdMatches(householdId: string): Promise<{
+    householdSchemes: SchemeMatch[]
+    memberSchemes: Map<string, SchemeMatch[]> // memberId -> schemes
+  }>
+  
+  // Calculate total household income
+  calculateHouseholdIncome(householdId: string): Promise<number>
+}
+```
+
+**Implementation Details**:
+- Household data stored in PostgreSQL with foreign key to user
+- Support up to 20 family members per household
+- Automatic household income calculation from earning members
+- Scheme matching considers both individual and household eligibility
+- Results grouped by applicable member
+- Dependent profiles inherit some attributes from head (address, state)
+- Privacy: Only head of household can view/edit all members
+- Validation: Age-appropriate fields (no income for children)
+
+### 13. Assisted Application Flow with AI Voice Guidance
+
+**Responsibility**: Provide step-by-step voice guidance for scheme applications.
+
+**Interfaces**:
+
+```typescript
+interface ApplicationAssistant {
+  // Start guided application
+  startApplication(userId: string, schemeId: string): Promise<{
+    applicationId: string
+    steps: ApplicationStep[]
+    currentStep: number
+  }>
+  
+  // Get voice guidance for current step
+  getVoiceGuidance(applicationId: string, stepNumber: number): Promise<{
+    audioUrl: string
+    transcript: string
+    duration: number
+  }>
+  
+  // Process voice input for form field
+  processVoiceInput(applicationId: string, fieldName: string, audioData: Buffer): Promise<{
+    extractedValue: any
+    confidence: number
+    needsConfirmation: boolean
+  }>
+  
+  // Confirm user input via voice
+  confirmInput(applicationId: string, fieldName: string, value: any): Promise<{
+    confirmed: boolean
+    audioUrl: string // Reads back the value
+  }>
+  
+  // Get progress and remaining time
+  getProgress(applicationId: string): Promise<{
+    completedSteps: number
+    totalSteps: number
+    estimatedTimeRemaining: number // minutes
+  }>
+  
+  // Pause and resume application
+  pauseApplication(applicationId: string): Promise<{success: boolean}>
+  resumeApplication(applicationId: string): Promise<{
+    currentStep: number
+    lastSaved: Date
+  }>
+}
+```
+
+**Implementation Details**:
+- Voice guidance generated using Amazon Polly with SSML for natural speech
+- Context-aware instructions based on user profile and scheme
+- Field-level voice input with entity extraction
+- Confirmation loop: read back user input for verification
+- Progress tracking with visual and audio indicators
+- Pause/resume functionality with auto-save
+- Error correction: "That doesn't seem right, let's try again"
+- Encouragement messages: "Great! You're halfway done"
+- Document guidance: explains what each document is and where to get it
+- Estimated time updates based on actual progress
+
+### 14. Smart Forms with Auto-Save
+
+**Responsibility**: Intelligent forms that work offline and save automatically.
+
+**Interfaces**:
+
+```typescript
+interface SmartForm {
+  // Initialize form with pre-filled data
+  initializeForm(formType: string, userId: string): Promise<{
+    formId: string
+    fields: FormField[]
+    preFilledData: Record<string, any>
+  }>
+  
+  // Auto-save field value
+  autoSaveField(formId: string, fieldName: string, value: any): Promise<{
+    saved: boolean
+    savedAt: Date
+    syncStatus: 'local' | 'synced'
+  }>
+  
+  // Get intelligent field suggestions
+  getSuggestions(formId: string, fieldName: string, partialInput: string): Promise<string[]>
+  
+  // Validate field in real-time
+  validateField(formId: string, fieldName: string, value: any): Promise<{
+    valid: boolean
+    errors: string[]
+    suggestions: string[]
+  }>
+  
+  // Submit form
+  submitForm(formId: string): Promise<{
+    submitted: boolean
+    applicationId: string
+    trackingId: string
+  }>
+  
+  // Resume partially completed form
+  resumeForm(formId: string): Promise<{
+    fields: FormField[]
+    completedFields: string[]
+    lastSaved: Date
+  }>
+}
+
+interface FormField {
+  name: string
+  label: string
+  type: 'text' | 'number' | 'select' | 'date' | 'file'
+  required: boolean
+  validation: ValidationRule[]
+  helpText: string
+  suggestions?: string[]
+}
+```
+
+**Implementation Details**:
+- Auto-save after 2 seconds of inactivity per field
+- Local storage in IndexedDB for offline capability
+- Sync status indicator: "Saved locally" / "Synced to cloud"
+- Intelligent suggestions from user profile and previous applications
+- Real-time validation with helpful error messages
+- Field dependencies: show/hide fields based on other values
+- Progress bar showing completion percentage
+- Resume from any device using cloud sync
+- Conflict resolution: server version wins, notify user of changes
+- Form versioning: handle schema changes gracefully
+
+### 15. Real-Time Application Status Tracking
+
+**Responsibility**: Track and display application status with government portal integration.
+
+**Interfaces**:
+
+```typescript
+interface ApplicationTracking {
+  // Submit application and get tracking ID
+  submitApplication(userId: string, schemeId: string, formData: any): Promise<{
+    applicationId: string
+    trackingId: string
+    submittedAt: Date
+  }>
+  
+  // Get current application status
+  getStatus(trackingId: string): Promise<ApplicationStatus>
+  
+  // Get status history
+  getStatusHistory(trackingId: string): Promise<StatusChange[]>
+  
+  // Integrate with government portal for real-time updates
+  syncWithGovernmentPortal(trackingId: string): Promise<{
+    synced: boolean
+    lastSyncAt: Date
+  }>
+  
+  // Get all applications for user
+  getUserApplications(userId: string): Promise<ApplicationStatus[]>
+  
+  // Upload pending documents
+  uploadDocument(trackingId: string, documentType: string, file: Buffer): Promise<{
+    uploaded: boolean
+    documentId: string
+  }>
+}
+
+interface ApplicationStatus {
+  trackingId: string
+  schemeId: string
+  schemeName: string
+  status: 'submitted' | 'under_review' | 'pending_documents' | 'approved' | 'rejected' | 'disbursed'
+  submittedAt: Date
+  lastUpdated: Date
+  estimatedProcessingTime: number // days
+  pendingDocuments?: string[]
+  rejectionReason?: string
+  contactInfo: ContactInfo
+  nextSteps: string[]
+}
+
+interface StatusChange {
+  status: string
+  timestamp: Date
+  notes?: string
+  updatedBy: string
+}
+```
+
+**Implementation Details**:
+- Unique tracking ID generated using UUID
+- Status stored in DynamoDB with GSI on userId
+- Real-time updates via WebSocket (AWS API Gateway WebSocket)
+- Government portal integration using APIs where available
+- Fallback: Manual status updates by admin
+- SMS and in-app notifications on status changes
+- Estimated processing time based on historical data
+- Document upload to S3 with virus scanning
+- Status history for transparency and audit
+- Reapplication guidance for rejected applications
+
+### 16. Explainable AI Engine
+
+**Responsibility**: Provide human-readable explanations for eligibility decisions.
+
+**Interfaces**:
+
+```typescript
+interface ExplainabilityEngine {
+  // Generate explanation for eligibility decision
+  explainEligibility(userId: string, schemeId: string, decision: boolean): Promise<{
+    explanation: string
+    matchedCriteria: Criterion[]
+    unmatchedCriteria: Criterion[]
+    confidenceLevel: number
+    reasoning: string[]
+  }>
+  
+  // Explain why scheme was recommended
+  explainRecommendation(userId: string, schemeId: string, rank: number): Promise<{
+    explanation: string
+    factors: Factor[]
+  }>
+  
+  // Suggest profile improvements for eligibility
+  suggestImprovements(userId: string, schemeId: string): Promise<{
+    suggestions: Suggestion[]
+    potentialImpact: string
+  }>
+}
+
+interface Criterion {
+  name: string
+  required: boolean
+  userValue: any
+  schemeRequirement: any
+  matched: boolean
+  importance: 'high' | 'medium' | 'low'
+}
+
+interface Factor {
+  name: string
+  contribution: number // percentage
+  description: string
+}
+
+interface Suggestion {
+  field: string
+  currentValue: any
+  suggestedValue: any
+  reason: string
+  impact: string
+}
+```
+
+**Implementation Details**:
+- SHAP (SHapley Additive exPlanations) for ML model interpretability
+- Rule-based explanations for hard constraints
+- Natural language generation for user-friendly text
+- Explanations in user's selected language
+- Importance ranking: highlight most critical factors
+- Actionable suggestions: what user can change to become eligible
+- Confidence indicators: "High confidence" / "Moderate confidence"
+- Example explanations:
+  - "You qualify because your age (65) is above the minimum (60) and your income (₹1.5 lakh) is below the maximum (₹2 lakh)"
+  - "You don't qualify because your state (Kerala) is not in the allowed states list"
+- Visual indicators: ✓ for matched, ✗ for unmatched criteria
+
+## Data Flow Diagrams
+
+### User Registration and Profile Creation Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant API Gateway
+    participant Auth Service
+    participant Profile Service
+    participant Database
+    participant SMS Service
+
+    User->>Frontend: Enter mobile number
+    Frontend->>API Gateway: POST /auth/register
+    API Gateway->>Auth Service: Register request
+    Auth Service->>SMS Service: Send OTP
+    SMS Service-->>User: OTP via SMS
+    Auth Service-->>Frontend: OTP sent confirmation
+    
+    User->>Frontend: Enter OTP
+    Frontend->>API Gateway: POST /auth/verify-otp
+    API Gateway->>Auth Service: Verify OTP
+    Auth Service->>Database: Create user record
+    Auth Service-->>Frontend: JWT token
+    
+    Frontend->>API Gateway: POST /profile/create
+    API Gateway->>Profile Service: Create profile
+    Profile Service->>Database: Store encrypted profile
+    Profile Service-->>Frontend: Profile created
+```
+
+### Scheme Matching Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant API Gateway
+    participant Matcher Service
+    participant Hybrid Engine
+    participant ML Model
+    participant Rule Engine
+    participant Explainability
+    participant Cache
+    participant Database
+
+    User->>Frontend: Request scheme matches
+    Frontend->>API Gateway: GET /matches
+    API Gateway->>Matcher Service: Get matches for user
+    
+    Matcher Service->>Cache: Check cache
+    alt Cache hit
+        Cache-->>Matcher Service: Cached matches
+    else Cache miss
+        Matcher Service->>Database: Get user profile
+        Matcher Service->>Database: Get all schemes
+        Matcher Service->>Hybrid Engine: Match profile to schemes
+        
+        Hybrid Engine->>ML Model: AI-based matching
+        ML Model-->>Hybrid Engine: Confidence scores
+        
+        Hybrid Engine->>Rule Engine: Apply hard rules
+        Rule Engine-->>Hybrid Engine: Filtered results
+        
+        Hybrid Engine-->>Matcher Service: Ranked matches
+        
+        Matcher Service->>Explainability: Generate explanations
+        Explainability-->>Matcher Service: Explanations
+        
+        Matcher Service->>Cache: Store results
+    end
+    
+    Matcher Service-->>Frontend: Matched schemes with explanations
+    Frontend-->>User: Display results
+```
+
+### Offline Form Submission and Sync Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant Service Worker
+    participant IndexedDB
+    participant API Gateway
+    participant Form Service
+    participant Database
+
+    User->>Frontend: Fill form offline
+    Frontend->>Service Worker: Auto-save field
+    Service Worker->>IndexedDB: Store locally
+    Service Worker-->>Frontend: Saved locally
+    
+    Note over User,IndexedDB: User goes online
+    
+    Service Worker->>Service Worker: Detect online
+    Service Worker->>API Gateway: Sync pending data
+    API Gateway->>Form Service: Submit form
+    Form Service->>Database: Store form data
+    Form Service-->>Service Worker: Sync successful
+    Service Worker->>IndexedDB: Clear synced data
+    Service Worker-->>Frontend: Synced to cloud
+    Frontend-->>User: Application submitted
+```
+
+### AI Scheme Ingestion Flow
+
+```mermaid
+sequenceDiagram
+    participant Scheduler
+    participant Ingestion Pipeline
+    participant Web Scraper
+    participant NLP Extractor
+    participant Fuzzy Matcher
+    participant HITL Queue
+    participant Admin
+    participant Database
+
+    Scheduler->>Ingestion Pipeline: Trigger daily scrape
+    Ingestion Pipeline->>Web Scraper: Scrape government sites
+    Web Scraper-->>Ingestion Pipeline: Raw HTML/PDF content
+    
+    Ingestion Pipeline->>NLP Extractor: Extract scheme data
+    NLP Extractor-->>Ingestion Pipeline: Extracted fields + confidence
+    
+    Ingestion Pipeline->>Fuzzy Matcher: Check duplicates
+    Fuzzy Matcher->>Database: Query existing schemes
+    Fuzzy Matcher-->>Ingestion Pipeline: Duplicate status
+    
+    alt High confidence (>95%) and not duplicate
+        Ingestion Pipeline->>Database: Auto-publish scheme
+    else Medium/Low confidence or duplicate
+        Ingestion Pipeline->>HITL Queue: Queue for review
+        Admin->>HITL Queue: Review scheme
+        Admin->>Database: Approve/Reject
+    end
+```
 
 ## Data Models
 
@@ -1294,4 +2027,607 @@ describe('Profile Service', () => {
 - Canary releases for gradual rollout
 - Feature flags for controlled feature releases
 - Automated rollback on health check failures
+
+## Security Design
+
+### Authentication and Authorization
+
+**OTP-Based Authentication**:
+- Mobile number as primary identifier
+- 6-digit OTP with 60-second validity
+- SMS delivery via Amazon SNS
+- Rate limiting: Max 3 OTP requests per 15 minutes
+- Account lockout after 3 failed verification attempts (15-minute cooldown)
+- JWT tokens with 30-minute expiration
+- Refresh tokens with 7-day expiration
+- Token rotation on refresh
+
+**Optional Aadhaar Integration**:
+- OAuth 2.0 flow with UIDAI
+- User consent required for data access
+- Fetch only basic demographic data (name, age, address)
+- No storage of Aadhaar number (only reference ID)
+- Compliance with Aadhaar Act regulations
+
+**Session Management**:
+- Stateless JWT tokens with claims (userId, role, exp)
+- Session data cached in Redis for fast validation
+- Automatic session expiration after 30 minutes of inactivity
+- Device fingerprinting for suspicious activity detection
+- Multi-device support with session listing and revocation
+
+**Role-Based Access Control (RBAC)**:
+- Roles: User, Admin, Verifier, SuperAdmin
+- Permissions: read:profile, write:profile, read:schemes, write:schemes, verify:schemes
+- Middleware for route-level authorization
+- Principle of least privilege
+
+### Data Encryption
+
+**Encryption at Rest**:
+- AES-256 encryption for all user profile data
+- AWS KMS for key management
+- Separate keys per data classification (PII, non-PII)
+- Automatic key rotation every 90 days
+- Database encryption using RDS encryption
+- S3 bucket encryption for stored files
+
+**Encryption in Transit**:
+- TLS 1.3 for all API communications
+- Certificate management via AWS Certificate Manager
+- HSTS headers to enforce HTTPS
+- Perfect Forward Secrecy (PFS) enabled
+
+**Field-Level Encryption**:
+- Mobile numbers hashed with salt
+- Sensitive profile fields encrypted before storage
+- Encryption keys stored in AWS Secrets Manager
+- Application-level encryption for extra security
+
+### Input Validation and Sanitization
+
+**API Input Validation**:
+- Schema validation using JSON Schema
+- Type checking and range validation
+- Whitelist-based validation for enums
+- Reject requests with invalid data (400 Bad Request)
+
+**SQL Injection Prevention**:
+- Parameterized queries for all database operations
+- ORM (Sequelize/TypeORM) for query building
+- No dynamic SQL construction
+- Prepared statements for complex queries
+
+**XSS Protection**:
+- Content Security Policy (CSP) headers
+- Input sanitization using DOMPurify
+- Output encoding for user-generated content
+- React's built-in XSS protection
+
+**CSRF Protection**:
+- CSRF tokens for state-changing operations
+- SameSite cookie attribute
+- Origin and Referer header validation
+
+### API Security
+
+**Rate Limiting**:
+- API Gateway throttling: 1000 requests/second per user
+- Burst limit: 2000 requests
+- Per-endpoint limits for sensitive operations
+- Exponential backoff for repeated failures
+
+**AWS WAF Rules**:
+- SQL injection protection
+- XSS protection
+- Rate-based rules for DDoS mitigation
+- Geo-blocking for non-Indian traffic (optional)
+- IP reputation lists
+
+**API Key Management**:
+- API keys for third-party integrations
+- Key rotation every 90 days
+- Usage tracking and quota enforcement
+- Revocation capability
+
+### Audit Logging
+
+**Logged Events**:
+- All authentication attempts (success/failure)
+- Profile read/write operations
+- Admin actions (scheme creation, user management)
+- Sensitive data access
+- Configuration changes
+- Security events (failed auth, suspicious activity)
+
+**Log Format**:
+```json
+{
+  "timestamp": "2024-01-15T10:30:00Z",
+  "eventType": "profile_read",
+  "userId": "hashed_user_id",
+  "actorId": "hashed_actor_id",
+  "ipAddress": "masked_ip",
+  "userAgent": "browser_info",
+  "resource": "user_profile",
+  "action": "read",
+  "result": "success",
+  "requestId": "uuid"
+}
+```
+
+**Log Storage and Retention**:
+- CloudWatch Logs for centralized logging
+- 90-day retention for audit logs
+- 30-day retention for application logs
+- S3 archival for long-term storage
+- Encryption at rest for log data
+
+**PII Protection in Logs**:
+- Hash user IDs and mobile numbers
+- Mask IP addresses (last octet)
+- Redact sensitive fields (income, disability status)
+- No passwords, tokens, or OTPs in logs
+
+### Compliance and Privacy
+
+**Data Privacy**:
+- GDPR-inspired data protection practices
+- User consent for data collection
+- Right to access personal data
+- Right to deletion (30-day processing)
+- Data minimization principle
+
+**Regulatory Compliance**:
+- IT Act 2000 compliance
+- Aadhaar Act compliance (if Aadhaar integration used)
+- Data localization (all data stored in India)
+- Regular security audits
+- Penetration testing (quarterly)
+
+**Incident Response**:
+- Security incident response plan
+- Automated alerting for security events
+- Incident classification (P0-P3)
+- Breach notification procedures
+- Post-incident review and remediation
+
+## Scalability and Deployment
+
+### AWS Cloud Architecture
+
+**Compute Layer**:
+- AWS Lambda for serverless microservices
+- Auto-scaling based on request volume
+- Provisioned concurrency for critical services
+- Lambda@Edge for CDN-based processing
+- ECS Fargate for long-running processes (ingestion pipeline)
+
+**Database Layer**:
+- Amazon RDS PostgreSQL with Multi-AZ deployment
+- Read replicas for read-heavy workloads
+- Automatic failover in case of primary failure
+- DynamoDB for scheme database (high-read, low-latency)
+- On-demand capacity mode for unpredictable traffic
+
+**Caching Layer**:
+- Amazon ElastiCache (Redis) for session and data caching
+- Cluster mode enabled for horizontal scaling
+- Multi-AZ replication for high availability
+- Cache warming for frequently accessed data
+- TTL-based cache invalidation
+
+**Storage Layer**:
+- Amazon S3 for voice recordings and documents
+- S3 Intelligent-Tiering for cost optimization
+- Lifecycle policies for automatic archival
+- Cross-region replication for disaster recovery
+
+**CDN and Edge**:
+- Amazon CloudFront for global content delivery
+- Edge locations in major Indian cities
+- Lambda@Edge for request/response manipulation
+- Origin shield for cache hit ratio improvement
+
+### Auto-Scaling Strategy
+
+**Lambda Auto-Scaling**:
+- Concurrent execution limit: 1000 per service
+- Reserved concurrency for critical services
+- Provisioned concurrency for low-latency requirements
+- Automatic scaling based on invocation rate
+
+**Database Auto-Scaling**:
+- RDS storage auto-scaling (up to 10 TB)
+- Read replica auto-scaling based on CPU utilization
+- DynamoDB on-demand capacity mode
+- Aurora Serverless for variable workloads (future consideration)
+
+**Cache Auto-Scaling**:
+- ElastiCache cluster scaling based on memory utilization
+- Add nodes when memory > 75%
+- Remove nodes when memory < 25%
+
+**Horizontal Scaling Targets**:
+- Support 100,000 concurrent users
+- Handle 10 million daily active users
+- Process 1000 requests/second per service
+- Scale to 10x during peak hours (scheme announcement days)
+
+### Multi-Region Deployment
+
+**Primary Region**: ap-south-1 (Mumbai)
+**Secondary Region**: ap-south-2 (Hyderabad)
+
+**Active-Active Configuration**:
+- Route 53 latency-based routing
+- Both regions serve traffic simultaneously
+- Database replication between regions
+- S3 cross-region replication
+- CloudFront serves from nearest edge location
+
+**Disaster Recovery**:
+- RTO (Recovery Time Objective): 1 hour
+- RPO (Recovery Point Objective): 15 minutes
+- Automated failover using Route 53 health checks
+- Regular DR drills (quarterly)
+- Backup restoration testing
+
+### Monitoring and Observability
+
+**Application Monitoring**:
+- Amazon CloudWatch for metrics and logs
+- Custom metrics: scheme matches, voice queries, cache hit rate
+- Dashboards for real-time monitoring
+- Anomaly detection using CloudWatch Insights
+
+**Distributed Tracing**:
+- AWS X-Ray for request tracing
+- Trace entire request flow across services
+- Identify bottlenecks and latency issues
+- Service map visualization
+
+**Alerting**:
+- CloudWatch Alarms for threshold breaches
+- SNS for alert notifications
+- PagerDuty integration for on-call rotation
+- Alert escalation policies
+
+**Key Metrics**:
+- API latency (p50, p95, p99)
+- Error rate (4xx, 5xx)
+- Request volume
+- Database query time
+- Cache hit rate
+- Lambda cold start rate
+- User session duration
+- Scheme match accuracy
+
+**Log Aggregation**:
+- Centralized logging in CloudWatch Logs
+- Log groups per service
+- Log insights for querying and analysis
+- Correlation IDs for request tracing
+
+### Cost Optimization
+
+**Strategies**:
+- Lambda for pay-per-use compute
+- DynamoDB on-demand for variable traffic
+- S3 Intelligent-Tiering for storage
+- Reserved instances for predictable workloads
+- Spot instances for batch processing
+- CloudFront caching to reduce origin requests
+- Compression to reduce data transfer costs
+
+**Cost Monitoring**:
+- AWS Cost Explorer for cost analysis
+- Budget alerts for overspending
+- Cost allocation tags for service-level tracking
+- Regular cost optimization reviews
+
+### Deployment Pipeline
+
+**CI/CD Pipeline**:
+1. Code commit to GitHub
+2. GitHub Actions trigger build
+3. Run linting and unit tests
+4. Run property-based tests
+5. Build Docker images (for ECS services)
+6. Package Lambda functions
+7. Deploy to staging environment
+8. Run integration tests
+9. Run smoke tests
+10. Manual approval gate
+11. Deploy to production (blue-green)
+12. Run health checks
+13. Gradual traffic shift (10% → 50% → 100%)
+14. Monitor for errors
+15. Automatic rollback if error rate > 1%
+
+**Infrastructure as Code**:
+- AWS CDK (TypeScript) for infrastructure definition
+- Version-controlled infrastructure
+- Automated provisioning and updates
+- Environment parity (dev, staging, prod)
+
+**Deployment Strategies**:
+- Blue-green deployment for zero downtime
+- Canary releases for gradual rollout (10% → 100%)
+- Feature flags for controlled feature releases
+- Automated rollback on health check failures
+
+## AI Model Design
+
+### Hybrid AI + Rule-Based Architecture
+
+The eligibility matching engine uses a two-stage hybrid approach:
+
+**Stage 1: Rule-Based Filtering (Hard Constraints)**
+- Apply mandatory eligibility rules first
+- Filter out schemes that don't meet hard requirements
+- Rules include: age limits, income thresholds, location restrictions, category requirements
+- Fast execution using boolean logic
+- 100% precision for rule-based decisions
+
+**Stage 2: AI-Based Ranking (Soft Matching)**
+- ML model scores remaining schemes
+- Considers contextual factors: occupation, household composition, life circumstances
+- Fuzzy matching for text fields
+- Confidence scoring (0-100)
+- Ranked by relevance and benefit value
+
+**Benefits of Hybrid Approach**:
+- Guaranteed compliance with hard rules
+- AI flexibility for complex cases
+- Explainable decisions (rule + AI reasoning)
+- Better accuracy than pure AI or pure rules
+- Fallback to rules if AI fails
+
+### NLP for Multilingual Understanding
+
+**Model**: Multilingual BERT (mBERT) fine-tuned on Indian languages
+
+**Capabilities**:
+- Intent recognition: "मुझे किसान योजना चाहिए" → Intent: search_scheme, Entity: farmer
+- Entity extraction: scheme names, locations, demographics
+- Semantic search: understand meaning, not just keywords
+- Code-mixed language support: "Mujhe farmer scheme chahiye"
+
+**Training Data**:
+- Government scheme documents in 20+ languages
+- User queries (anonymized)
+- Synthetic data generation
+- Translation pairs for cross-lingual learning
+
+**Fine-Tuning**:
+- Domain-specific vocabulary (government schemes, benefits)
+- Custom tokenizer for Indian languages
+- Transfer learning from pre-trained mBERT
+- Continuous fine-tuning with user feedback
+
+### Fuzzy Matching for Eligibility
+
+**Use Cases**:
+- Occupation matching: "किसान" matches "farmer", "agriculture worker", "cultivator"
+- Location matching: "Bengaluru" matches "Bangalore", "ಬೆಂಗಳೂರು"
+- Scheme name matching: handle typos and variations
+
+**Algorithm**: Levenshtein distance + phonetic matching
+
+**Implementation**:
+```typescript
+function fuzzyMatch(input: string, candidates: string[], threshold: number = 0.8): string[] {
+  return candidates.filter(candidate => {
+    const similarity = calculateSimilarity(input, candidate);
+    return similarity >= threshold;
+  });
+}
+
+function calculateSimilarity(str1: string, str2: string): number {
+  const distance = levenshteinDistance(str1.toLowerCase(), str2.toLowerCase());
+  const maxLength = Math.max(str1.length, str2.length);
+  return 1 - (distance / maxLength);
+}
+```
+
+**Phonetic Matching**:
+- Soundex for English
+- Metaphone for better accuracy
+- Custom phonetic algorithm for Indian languages
+
+### Continuous Learning Pipeline
+
+**Data Collection**:
+- User feedback on scheme recommendations (thumbs up/down)
+- Eligibility check results (applied/not applied)
+- Search queries and click-through rates
+- Voice recognition corrections
+- Admin corrections in HITL verification
+
+**Retraining Schedule**:
+- Monthly retraining for matching model
+- Weekly retraining for NLP models
+- Triggered retraining if accuracy drops below 85%
+
+**Retraining Process**:
+1. Collect new training data from production
+2. Anonymize and clean data
+3. Merge with existing training set
+4. Split into train/validation/test (70/15/15)
+5. Train new model version
+6. Evaluate on test set
+7. A/B test against current model (10% traffic)
+8. Compare metrics: accuracy, precision, recall, latency
+9. Deploy if new model performs better
+10. Monitor for regression
+
+**Model Versioning**:
+- Semantic versioning (v1.2.3)
+- Model registry in S3
+- Metadata: training date, accuracy, dataset size
+- Rollback capability to previous version
+
+### Explainability Module
+
+**Techniques**:
+- SHAP (SHapley Additive exPlanations) for feature importance
+- LIME (Local Interpretable Model-agnostic Explanations) for local explanations
+- Rule extraction for decision trees
+- Attention weights for NLP models
+
+**Explanation Generation**:
+1. Get model prediction and confidence
+2. Calculate SHAP values for each feature
+3. Identify top contributing features
+4. Generate natural language explanation
+5. Translate to user's language
+6. Format for display
+
+**Example Explanations**:
+- "You qualify because your age (65) meets the minimum requirement (60) and your income (₹1.5 lakh) is below the threshold (₹2 lakh). Your location (Karnataka) is also eligible."
+- "You don't qualify because your income (₹5 lakh) exceeds the maximum limit (₹3 lakh) for this scheme."
+- "You might qualify if you update your occupation to 'farmer' as this scheme targets agricultural workers."
+
+## Future Enhancements
+
+### Phase 2: Enhanced Integration (6-12 months)
+
+**IVR (Interactive Voice Response) Integration**:
+- Toll-free number for voice-based access
+- Multi-level IVR menu in regional languages
+- Voice-based scheme search and eligibility check
+- Application status inquiry via phone
+- Integration with existing government helplines
+- Support for feature phones without internet
+
+**WhatsApp Chatbot Integration**:
+- WhatsApp Business API integration
+- Conversational chatbot for scheme discovery
+- Share scheme information via WhatsApp
+- Application status updates via WhatsApp
+- Document submission via WhatsApp
+- Multilingual support
+- Rich media: images, PDFs, voice notes
+
+**DigiLocker API Integration**:
+- Fetch documents directly from DigiLocker
+- Auto-attach documents to applications
+- Verify document authenticity
+- Reduce manual document upload burden
+- Support for Aadhaar, PAN, driving license, etc.
+
+**Government Portal Integration**:
+- Direct application submission to government portals
+- Real-time status sync from multiple portals
+- Single sign-on (SSO) with government ID
+- Unified application tracking across schemes
+- API partnerships with state and central portals
+
+### Phase 3: Advanced Features (12-24 months)
+
+**Government Analytics Dashboard**:
+- Real-time scheme effectiveness metrics
+- Geographic distribution of applications
+- Demographic analysis of beneficiaries
+- Scheme awareness and uptake rates
+- Funnel analysis: discovery → application → approval
+- Predictive analytics for scheme demand
+- ROI calculation for government schemes
+- Customizable reports for policymakers
+
+**Predictive Scheme Recommendations**:
+- Life event detection: marriage, childbirth, retirement
+- Proactive scheme suggestions based on life stage
+- Seasonal recommendations: agricultural schemes during sowing season
+- Predict eligibility changes based on profile trends
+- "You might be eligible for this scheme in 6 months if..."
+
+**AI-Powered Document Verification**:
+- OCR for document text extraction
+- Verify document authenticity using AI
+- Cross-check information with profile data
+- Detect fraudulent documents
+- Auto-fill application forms from documents
+
+**Scheme Comparison Tool**:
+- Side-by-side comparison of similar schemes
+- Highlight differences in benefits and eligibility
+- Recommendation: which scheme is better for user
+- Visual comparison charts
+- "Apply to all" option for multiple schemes
+
+**Community Features**:
+- User forums for scheme discussions
+- Success stories and testimonials
+- Tips and advice from beneficiaries
+- Q&A section with verified answers
+- Peer support for application process
+- Moderation for quality and safety
+
+**Gamification**:
+- Profile completion badges
+- Application submission rewards
+- Referral bonuses for helping others
+- Leaderboards for community engagement
+- Achievement unlocks for milestones
+- Incentivize accurate profile information
+
+### Phase 4: Ecosystem Expansion (24+ months)
+
+**Mobile App (Native)**:
+- iOS and Android native apps
+- Better offline capabilities
+- Push notifications
+- Biometric authentication
+- Camera integration for document scanning
+- Location-based scheme discovery
+
+**USSD Support**:
+- Access via *123# style codes
+- No internet required
+- Works on all phones
+- Basic scheme search and eligibility check
+- Application status inquiry
+- SMS-based information delivery
+
+**API Marketplace**:
+- Public API for third-party integrations
+- NGOs and CSCs can build on platform
+- Developer documentation and SDKs
+- Rate-limited free tier
+- Paid tiers for high-volume usage
+- Webhook support for real-time updates
+
+**Blockchain for Transparency**:
+- Immutable application records
+- Transparent benefit disbursement tracking
+- Smart contracts for automatic eligibility
+- Fraud prevention through distributed ledger
+- Audit trail for all transactions
+
+**AI Voice Assistant (Alexa/Google Home)**:
+- "Alexa, check my scheme eligibility"
+- Voice-based scheme discovery at home
+- Application status updates via voice
+- Reminders for deadlines
+- Multilingual voice support
+
+**Offline Kiosks**:
+- Self-service kiosks in rural areas
+- Touch screen interface
+- Voice guidance
+- Document scanning
+- Assisted mode with video call to support agent
+- Printer for application receipts
+
+**Partnerships**:
+- Common Service Centers (CSCs)
+- Post offices
+- Banks and financial institutions
+- NGOs and community organizations
+- Telecom operators for SMS/USSD
+- Government departments for direct integration
+
+This comprehensive design provides a solid foundation for building Sahaayak AI as a scalable, accessible, and effective platform for government scheme discovery and application.
 
